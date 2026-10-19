@@ -234,7 +234,7 @@ def mouse_click(button):
 # SCROLL
 # ============================================================
 
-WHEEL_DELTA = 60
+WHEEL_DELTA = 120
 scroll_remainder = 0.0
 
 
