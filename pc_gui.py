@@ -1,709 +1,450 @@
+import os
+import re
 import socket
+import subprocess
+import sys
 import threading
+import queue
 import time
-import ctypes
-from ctypes import wintypes
+import tkinter as tk
+from tkinter import messagebox
+from pathlib import Path
 
-HOST = "0.0.0.0"
+# ============================================================
+# APP DIR + RECEIVER FILE
+# ============================================================
+
+if getattr(sys, "frozen", False):
+    APP_DIR       = Path(sys.executable).resolve().parent
+    RECEIVER_FILE = APP_DIR / "receiver2.exe"
+else:
+    APP_DIR       = Path(__file__).resolve().parent
+    RECEIVER_FILE = APP_DIR / "receiver2.py"
+
 PORT = 5005
 
-SPEED = 1.0
-POSITION_UPDATE_RATE = 60
-
 # ============================================================
-# WINDOWS INPUT
+# COLORS
 # ============================================================
 
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-
-INPUT_MOUSE = 0
-
-MOUSEEVENTF_MOVE = 0x0001
-MOUSEEVENTF_LEFTDOWN = 0x0002
-MOUSEEVENTF_LEFTUP = 0x0004
-MOUSEEVENTF_RIGHTDOWN = 0x0008
-MOUSEEVENTF_RIGHTUP = 0x0010
-MOUSEEVENTF_WHEEL = 0x0800
-
-
-class MOUSEINPUT(ctypes.Structure):
-    _fields_ = [
-        ("dx", wintypes.LONG),
-        ("dy", wintypes.LONG),
-        ("mouseData", wintypes.DWORD),
-        ("dwFlags", wintypes.DWORD),
-        ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG)),
-    ]
-
-
-class INPUT_UNION(ctypes.Union):
-    _fields_ = [
-        ("mi", MOUSEINPUT),
-    ]
-
-
-class INPUT(ctypes.Structure):
-    _anonymous_ = ("u",)
-
-    _fields_ = [
-        ("type", wintypes.DWORD),
-        ("u", INPUT_UNION),
-    ]
-
+BG    = "#0B0F14"
+PANEL = "#141B24"
+CYAN  = "#36D9FF"
+GREEN = "#45E39A"
+RED   = "#FF647C"
+TEXT  = "#F0F5FA"
+MUTED = "#9BAAB8"
 
 # ============================================================
-# MOVE
+# STATE
 # ============================================================
 
-def move_mouse(dx, dy):
-    dx = int(round(dx))
-    dy = int(round(dy))
-
-    if dx == 0 and dy == 0:
-        return False
-
-    extra = ctypes.pointer(wintypes.ULONG(0))
-
-    mouse_input = MOUSEINPUT(
-        dx=dx,
-        dy=dy,
-        mouseData=0,
-        dwFlags=MOUSEEVENTF_MOVE,
-        time=0,
-        dwExtraInfo=extra,
-    )
-
-    input_data = INPUT(
-        type=INPUT_MOUSE,
-        u=INPUT_UNION(mi=mouse_input),
-    )
-
-    result = user32.SendInput(
-        1,
-        ctypes.byref(input_data),
-        ctypes.sizeof(INPUT),
-    )
-
-    if result != 1:
-        print(
-            "SendInput error:",
-            ctypes.get_last_error()
-        )
-        return False
-
-    return True
-
+process            = None
+_receiver_stopping = False
+log_queue          = queue.Queue()
 
 # ============================================================
-# BUTTON DOWN
+# FIREWALL AUTO FIX
 # ============================================================
 
-def mouse_button_down(button):
-    if button == "left":
-        flag = MOUSEEVENTF_LEFTDOWN
-    elif button == "right":
-        flag = MOUSEEVENTF_RIGHTDOWN
-    else:
-        return False
 
-    extra = ctypes.pointer(wintypes.ULONG(0))
-
-    input_data = INPUT(
-        type=INPUT_MOUSE,
-        u=INPUT_UNION(
-            mi=MOUSEINPUT(
-                dx=0,
-                dy=0,
-                mouseData=0,
-                dwFlags=flag,
-                time=0,
-                dwExtraInfo=extra,
-            )
-        ),
-    )
-
-    result = user32.SendInput(
-        1,
-        ctypes.byref(input_data),
-        ctypes.sizeof(INPUT),
-    )
-
-    return result == 1
-
-
-# ============================================================
-# BUTTON UP
-# ============================================================
-
-def mouse_button_up(button):
-    if button == "left":
-        flag = MOUSEEVENTF_LEFTUP
-    elif button == "right":
-        flag = MOUSEEVENTF_RIGHTUP
-    else:
-        return False
-
-    extra = ctypes.pointer(wintypes.ULONG(0))
-
-    input_data = INPUT(
-        type=INPUT_MOUSE,
-        u=INPUT_UNION(
-            mi=MOUSEINPUT(
-                dx=0,
-                dy=0,
-                mouseData=0,
-                dwFlags=flag,
-                time=0,
-                dwExtraInfo=extra,
-            )
-        ),
-    )
-
-    result = user32.SendInput(
-        1,
-        ctypes.byref(input_data),
-        ctypes.sizeof(INPUT),
-    )
-
-    return result == 1
-
-
-# ============================================================
-# CLICK
-# ============================================================
-
-def mouse_click(button):
-    if button == "left":
-        down = MOUSEEVENTF_LEFTDOWN
-        up = MOUSEEVENTF_LEFTUP
-
-    elif button == "right":
-        down = MOUSEEVENTF_RIGHTDOWN
-        up = MOUSEEVENTF_RIGHTUP
-
-    else:
-        return False
-
-    extra = ctypes.pointer(wintypes.ULONG(0))
-
-    down_input = INPUT(
-        type=INPUT_MOUSE,
-        u=INPUT_UNION(
-            mi=MOUSEINPUT(
-                dx=0,
-                dy=0,
-                mouseData=0,
-                dwFlags=down,
-                time=0,
-                dwExtraInfo=extra,
-            )
-        ),
-    )
-
-    up_input = INPUT(
-        type=INPUT_MOUSE,
-        u=INPUT_UNION(
-            mi=MOUSEINPUT(
-                dx=0,
-                dy=0,
-                mouseData=0,
-                dwFlags=up,
-                time=0,
-                dwExtraInfo=extra,
-            )
-        ),
-    )
-
-    result_down = user32.SendInput(
-        1,
-        ctypes.byref(down_input),
-        ctypes.sizeof(INPUT),
-    )
-
-    result_up = user32.SendInput(
-        1,
-        ctypes.byref(up_input),
-        ctypes.sizeof(INPUT),
-    )
-
-    return result_down == 1 and result_up == 1
-
-
-# ============================================================
-# SCROLL
-# ============================================================
-
-WHEEL_DELTA = 120
-scroll_remainder = 0.0
-
-
-def scroll_mouse(amount):
-    global scroll_remainder
-
-    scroll_remainder += amount
-
-    steps = int(scroll_remainder)
-
-    if steps == 0:
-        return False
-
-    scroll_remainder -= steps
-
-    wheel_amount = steps * WHEEL_DELTA
-
-    extra = ctypes.pointer(wintypes.ULONG(0))
-
-    wheel_input = INPUT(
-        type=INPUT_MOUSE,
-        u=INPUT_UNION(
-            mi=MOUSEINPUT(
-                dx=0,
-                dy=0,
-                mouseData=wheel_amount,
-                dwFlags=MOUSEEVENTF_WHEEL,
-                time=0,
-                dwExtraInfo=extra,
-            )
-        ),
-    )
-
-    result = user32.SendInput(
-        1,
-        ctypes.byref(wheel_input),
-        ctypes.sizeof(INPUT),
-    )
-
-    return result == 1
-
-
-# ============================================================
-# NETWORK
-# ============================================================
-
-sock = socket.socket(
-    socket.AF_INET,
-    socket.SOCK_DGRAM
-)
-
-sock.setsockopt(
-    socket.SOL_SOCKET,
-    socket.SO_REUSEADDR,
-    1
-)
-
-sock.bind(
-    (HOST, PORT)
-)
-
-phone_address = None
-
-address_lock = threading.Lock()
-
-running = True
-
-
-# ============================================================
-# CURSOR POSITION
-# ============================================================
-
-def get_cursor_position():
-    point = wintypes.POINT()
-
-    result = user32.GetCursorPos(
-        ctypes.byref(point)
-    )
-
-    if result == 0:
-        return 0, 0
-
-    return point.x, point.y
-
-
-def get_screen_size():
-    width = user32.GetSystemMetrics(0)
-    height = user32.GetSystemMetrics(1)
-
-    return width, height
-
-
-# ============================================================
-# CURSOR POSITION THREAD
-# ============================================================
-
-def send_cursor_position():
-    global phone_address
-
-    interval = 1.0 / POSITION_UPDATE_RATE
-
-    next_time = time.perf_counter()
-
-    while running:
-
-        try:
-
-            with address_lock:
-                current_phone = phone_address
-
-            if current_phone is not None:
-
-                x, y = get_cursor_position()
-
-                width, height = get_screen_size()
-
-                message = (
-                    f"POS,{x},{y},{width},{height}"
-                )
-
-                sock.sendto(
-                    message.encode("utf-8"),
-                    current_phone
-                )
-
-        except Exception as e:
-
-            print(
-                "Position update error:",
-                e
-            )
-
-        next_time += interval
-
-        remaining = (
-            next_time -
-            time.perf_counter()
+def auto_fix_firewall():
+    try:
+        check = subprocess.run(
+            [
+                "netsh", "advfirewall", "firewall",
+                "show", "rule", "name=OnlineMouse", "dir=in", "verbose"
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
 
-        if remaining > 0:
+        rule_exists = (
+            "Rule Name:" in check.stdout
+            and "OnlineMouse" in check.stdout
+        )
 
-            time.sleep(remaining)
-
+        if rule_exists:
+            result = subprocess.run(
+                [
+                    "netsh", "advfirewall", "firewall",
+                    "set", "rule", "name=OnlineMouse", "new",
+                    "profile=private",
+                    "remoteip=LocalSubnet",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
         else:
+            result = subprocess.run(
+                [
+                    "netsh", "advfirewall", "firewall",
+                    "add", "rule",
+                    "name=OnlineMouse",
+                    "dir=in",
+                    "action=allow",
+                    "enable=yes",
+                    "profile=private",
+                    "protocol=UDP",
+                    f"localport={PORT}",
+                    "remoteip=LocalSubnet",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
 
-            next_time = time.perf_counter()
+        if result.returncode == 0:
+            add_log(
+                "Firewall rule configured for Private network "
+                "and LocalSubnet."
+            )
+            return True
 
+        details = (result.stdout + "\n" + result.stderr).strip()
+        add_log(f"Firewall update failed: {details}")
+        add_log(
+            "If permission is denied, close the app and run "
+            "pc_gui.exe as administrator."
+        )
+        return False
 
-position_thread = threading.Thread(
-    target=send_cursor_position,
-    daemon=True
-)
-
-position_thread.name = "CursorPositionThread"
-
-position_thread.start()
-
+    except (OSError, subprocess.SubprocessError) as error:
+        add_log(f"Firewall check failed: {error}")
+        return False
 
 # ============================================================
-# STARTUP
+# IP DETECTION
 # ============================================================
 
-print()
-print("================================================")
-print("       ONLINE MOUSE - NATIVE WINDOWS")
-print("================================================")
-print()
-
-print(f"UDP Port       : {PORT}")
-print(f"Position Rate  : {POSITION_UPDATE_RATE} Hz")
-print(f"Mouse Speed    : {SPEED}")
-print("Input Method   : Windows SendInput")
-print("Latency Test   : ISOLATED")
-print()
-
-print("Waiting for Android phone...")
-print()
-
+def get_local_ip():
+    try:
+        result = subprocess.run(
+            ["ipconfig"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=5,
+        )
+        current_adapter = ""
+        fallback_ip     = None
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if line and not line[0].isspace() and ":" in stripped:
+                current_adapter = stripped.lower()
+            if re.search(r"ipv4 address", stripped, re.IGNORECASE):
+                match = re.search(r"(\d{1,3}(?:\.\d{1,3}){3})", stripped)
+                if not match:
+                    continue
+                ip = match.group(1)
+                try:
+                    socket.inet_aton(ip)
+                except OSError:
+                    continue
+                if ip.startswith(("127.", "169.254.")):
+                    continue
+                if fallback_ip is None:
+                    fallback_ip = ip
+                if any(n in current_adapter for n in ("wi-fi", "wireless", "wlan")):
+                    return ip
+        return fallback_ip or "IP not found"
+    except (OSError, subprocess.SubprocessError):
+        return "IP detection failed"
 
 # ============================================================
-# MAIN RECEIVER LOOP
+# LOG
 # ============================================================
 
-try:
+def add_log(message):
+    log_queue.put(str(message))
 
+def refresh_log():
     while True:
-
-        data, address = sock.recvfrom(2048)
-
         try:
-
-            message = data.decode(
-                "utf-8"
-            ).strip()
-            
-
-        except UnicodeDecodeError:
-
-            print(
-                "Invalid data received from:",
-                address
-            )
-
-            continue
-        
-        # Automatic PC discovery
-        if message == "DISCOVER_ONLINEMOUSE":
-            try:
-                sock.sendto(
-                    b"DISCOVERED_ONLINEMOUSE",
-                    address
-                )
-                print(
-                    f"PC discovery response sent to {address[0]}"
-                )
-            except OSError as exc:
-                print("Discovery response failed:", exc)
-
-            continue
-
-        # ====================================================
-        # PING
-        # ====================================================
-
-        if message.startswith("PING,"):
-
-            token = message[5:]
-
-            sock.sendto(
-                f"PONG,{token}".encode("utf-8"),
-                address
-            )
-
-            continue
-
-        # ====================================================
-        # HELLO
-        # ====================================================
-
-        if message == "HELLO":
-
-            new_connection = False
-
-            with address_lock:
-
-                if phone_address != address:
-
-                    phone_address = address
-
-                    new_connection = True
-
-            if new_connection:
-
-                print()
-                print(
-                    "--------------------------------------------"
-                )
-                print("PHONE CONNECTED")
-                print(
-                    "Phone IP   :",
-                    address[0]
-                )
-                print(
-                    "Phone Port :",
-                    address[1]
-                )
-                print(
-                    "--------------------------------------------"
-                )
-                print()
-
-            sock.sendto(
-                b"PONG",
-                address
-            )
-
-            x, y = get_cursor_position()
-
-            width, height = get_screen_size()
-
-            position_message = (
-                f"POS,{x},{y},{width},{height}"
-            )
-
-            sock.sendto(
-                position_message.encode("utf-8"),
-                address
-            )
-
-            continue
-
-        # ====================================================
-        # MOVE
-        # ====================================================
-
-        if message.startswith("MOVE,"):
-
-            parts = message.split(",")
-
-            # Normal current Android format:
-            #
-            # MOVE,dx,dy
-            #
-            if len(parts) == 3:
-
-                try:
-
-                    dx = float(parts[1])
-                    dy = float(parts[2])
-
-                    dx *= SPEED
-                    dy *= SPEED
-
-                    move_mouse(
-                        dx,
-                        dy
-                    )
-
-                except ValueError:
-
-                    print(
-                        "Invalid MOVE command:",
-                        message
-                    )
-
-                continue
-
-            # Optional instrumented format:
-            #
-            # MOVE,sequence,dx,dy
-            #
-            # IMPORTANT:
-            # No ACK is generated here.
-            # This keeps the normal movement path clean.
-
-            if len(parts) == 4:
-
-                try:
-
-                    dx = float(parts[2])
-                    dy = float(parts[3])
-
-                    dx *= SPEED
-                    dy *= SPEED
-
-                    move_mouse(
-                        dx,
-                        dy
-                    )
-
-                except ValueError:
-
-                    print(
-                        "Invalid MOVE command:",
-                        message
-                    )
-
-                continue
-
-            print(
-                "Invalid MOVE command:",
-                message
-            )
-
-            continue
-
-        # ====================================================
-        # LEFT DOWN
-        # ====================================================
-
-        if message == "LEFT_DOWN":
-
-            mouse_button_down("left")
-
-            continue
-
-        # ====================================================
-        # LEFT UP
-        # ====================================================
-
-        if message == "LEFT_UP":
-
-            mouse_button_up("left")
-
-            continue
-
-        # ====================================================
-        # LEFT CLICK
-        # ====================================================
-
-        if message == "CLICK_LEFT":
-
-            mouse_click("left")
-
-            continue
-
-        # ====================================================
-        # RIGHT CLICK
-        # ====================================================
-
-        if message == "CLICK_RIGHT":
-
-            mouse_click("right")
-
-            continue
-
-        # ====================================================
-        # SCROLL
-        # ====================================================
-
-        if message.startswith("SCROLL,"):
-
-            parts = message.split(",")
-
-            if len(parts) == 2:
-
-                try:
-
-                    amount = float(parts[1])
-
-                    scroll_mouse(
-                        amount
-                    )
-
-                except ValueError:
-
-                    print(
-                        "Invalid SCROLL command:",
-                        message
-                    )
-
-            continue
-
-        # ====================================================
-        # UNKNOWN COMMAND
-        # ====================================================
-
-        if message != "":
-
-            print(
-                "Unknown command:",
-                message
-            )
-
+            line = log_queue.get_nowait()
+        except queue.Empty:
+            break
+        log_text.config(state="normal")
+        log_text.insert("end", line + "\n")
+        log_text.see("end")
+        log_text.config(state="disabled")
+
+def refresh_ip():
+    ip = get_local_ip()
+    ip_value.config(text=ip)
+    add_log(f"IP refreshed: {ip}")
+
+def copy_ip():
+    ip = ip_value.cget("text")
+    if ip in ("IP not found", "IP detection failed", "Not available", ""):
+        messagebox.showwarning(
+            "IP unavailable",
+            "Valid PC IP nahi mila. Check karo PC WiFi se connected hai.",
+        )
+        return
+    root.clipboard_clear()
+    root.clipboard_append(ip)
+    root.update()
+    add_log(f"Copied: {ip}")
 
 # ============================================================
-# STOP
+# RECEIVER OUTPUT READER
 # ============================================================
 
-except KeyboardInterrupt:
+def read_receiver_output(proc):
+    try:
+        if proc.stdout is not None:
+            for line in iter(proc.stdout.readline, ""):
+                line = line.rstrip()
+                if line:
+                    add_log(line)
+    except (OSError, ValueError) as error:
+        add_log(f"Output read error: {error}")
+    finally:
+        # Sirf tab restart karo jab unexpected crash ho
+        if not _receiver_stopping and proc is process:
+            add_log("⚠️  Receiver unexpected stop — 3s mein restart hoga...")
+            time.sleep(3)
+            root.after(0, start_server)
 
-    print()
-    print(
-        "Stopping Online Mouse Receiver..."
+# ============================================================
+# START SERVER
+# FIX: Dono modes mein CREATE_NO_WINDOW use karo
+#      Lekin STARTUPINFO se window hide karo — stdout pipe bhi kaam karega
+# ============================================================
+
+def _make_popen_kwargs(cmd):
+    """
+    Windows pe CMD window hide karo lekin stdout pipe karte raho.
+    STARTUPINFO use karo — CREATE_NO_WINDOW EXE stdout todta hai.
+    """
+    kwargs = dict(
+        cwd=str(APP_DIR),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
     )
 
+    if os.name == "nt":
+        # STARTUPINFO se window hide hogi
+        # stdout pipe bhi sahi kaam karega
+        si = subprocess.STARTUPINFO()
+        si.dwFlags    |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        kwargs["startupinfo"] = si
+        # CREATE_NO_WINDOW bilkul mat lagao EXE ke liye
+        kwargs["creationflags"] = 0
 
-finally:
+    return kwargs
 
-    running = False
 
-    with address_lock:
-        phone_address = None
+def start_server():
+    global process, _receiver_stopping
+    _receiver_stopping = False
+
+    # Double-call guard
+    if process is not None and process.poll() is None:
+        return
+
+    if not RECEIVER_FILE.is_file():
+        msg = (
+            f"{RECEIVER_FILE.name} nahi mila.\n\n"
+            "Dono files ek hi folder mein rakho:\n"
+            "  • OnlineMouse.exe\n"
+            "  • receiver2.exe"
+        )
+        messagebox.showerror("File not found", msg)
+        add_log(f"❌ {RECEIVER_FILE.name} nahi mila: {RECEIVER_FILE}")
+        return
+
+    auto_fix_firewall()
 
     try:
-        sock.close()
-    except Exception:
-        pass
+        if getattr(sys, "frozen", False):
+            # EXE mode — receiver2.exe directly
+            cmd = [str(RECEIVER_FILE)]
+        else:
+            # Python development mode
+            cmd = [sys.executable, "-u", str(RECEIVER_FILE)]
 
-    print(
-        "Receiver stopped."
-    )
+        kwargs  = _make_popen_kwargs(cmd)
+        process = subprocess.Popen(cmd, **kwargs)
+
+        threading.Thread(
+            target=read_receiver_output,
+            args=(process,),
+            daemon=True,
+        ).start()
+
+        status_label.config(text="● RECEIVER STARTED", fg=GREEN)
+        add_log("✅ receiver2 start ho gaya.")
+        add_log("Phone aur PC ek hi WiFi pe hone chahiye.")
+
+    except OSError as error:
+        process = None
+        status_label.config(text="● START FAILED", fg=RED)
+        add_log(f"❌ Start failed: {error}")
+        messagebox.showerror("Start nahi ho saka", str(error))
+
+# ============================================================
+# STOP SERVER
+# ============================================================
+
+def stop_server():
+    global process, _receiver_stopping
+    _receiver_stopping = True
+
+    if process is None or process.poll() is not None:
+        status_label.config(text="● RECEIVER STOPPED", fg=RED)
+        add_log("Receiver chal nahi raha.")
+        return
+    try:
+        process.terminate()
+        status_label.config(text="● RECEIVER STOPPED", fg=RED)
+        add_log("Receiver band kar diya.")
+    except OSError as error:
+        messagebox.showerror("Stop nahi ho saka", str(error))
+
+# ============================================================
+# UI REFRESH LOOP
+# ============================================================
+
+def refresh_ui():
+    global process
+    refresh_log()
+    if process is not None and process.poll() is not None:
+        if not _receiver_stopping:
+            status_label.config(text="● RECEIVER CRASHED", fg=RED)
+            add_log(f"Receiver crash — code {process.returncode}.")
+        else:
+            status_label.config(text="● RECEIVER STOPPED", fg=RED)
+        process = None
+    root.after(150, refresh_ui)
+
+# ============================================================
+# CLOSE
+# ============================================================
+
+def close_app():
+    global process
+    if process is not None and process.poll() is None:
+        if not messagebox.askyesno(
+            "Exit", "Receiver chal raha hai. Band karke exit karein?"
+        ):
+            return
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    root.destroy()
+
+# ============================================================
+# MAIN WINDOW
+# ============================================================
+
+root = tk.Tk()
+root.title("Online Mouse | PC Controller")
+root.geometry("760x650")
+root.minsize(650, 570)
+root.configure(bg=BG)
+root.protocol("WM_DELETE_WINDOW", close_app)
+
+# Header
+header = tk.Frame(root, bg=BG)
+header.pack(fill="x", padx=24, pady=(22, 12))
+tk.Label(
+    header, text="ONLINE MOUSE",
+    font=("Segoe UI", 23, "bold"), fg=CYAN, bg=BG,
+).pack(anchor="w")
+tk.Label(
+    header, text="GAMING PC MOUSE CONTROLLER",
+    font=("Segoe UI", 9, "bold"), fg=MUTED, bg=BG,
+).pack(anchor="w", pady=(3, 0))
+
+# IP Panel
+panel = tk.Frame(root, bg=PANEL, padx=18, pady=16)
+panel.pack(fill="x", padx=24, pady=8)
+tk.Label(
+    panel, text="PC CONNECTION DETAILS",
+    font=("Segoe UI", 10, "bold"), fg=TEXT, bg=PANEL,
+).pack(anchor="w")
+ip_row = tk.Frame(panel, bg=PANEL)
+ip_row.pack(fill="x", pady=(12, 6))
+tk.Label(
+    ip_row, text="PC IPv4 Address:",
+    font=("Segoe UI", 10), fg=MUTED, bg=PANEL,
+).pack(side="left")
+ip_value = tk.Label(
+    ip_row, text=get_local_ip(),
+    font=("Consolas", 12, "bold"), fg=CYAN, bg=PANEL,
+)
+ip_value.pack(side="left", padx=(8, 12))
+tk.Button(
+    ip_row, text="Refresh IP", command=refresh_ip,
+    bg="#243442", fg=TEXT, activebackground="#30495C",
+    activeforeground=TEXT, relief="flat", padx=10, pady=5, cursor="hand2",
+).pack(side="right", padx=(6, 0))
+tk.Button(
+    ip_row, text="Copy IP", command=copy_ip,
+    bg="#243442", fg=TEXT, activebackground="#30495C",
+    activeforeground=TEXT, relief="flat", padx=10, pady=5, cursor="hand2",
+).pack(side="right")
+tk.Label(
+    panel, text=f"UDP Port: {PORT}",
+    font=("Segoe UI", 10), fg=MUTED, bg=PANEL,
+).pack(anchor="w", pady=(4, 0))
+
+# Status
+status_label = tk.Label(
+    root, text="● RECEIVER STOPPED",
+    font=("Segoe UI", 11, "bold"), fg=RED, bg=BG,
+)
+status_label.pack(anchor="w", padx=26, pady=(12, 8))
+
+# Buttons
+buttons = tk.Frame(root, bg=BG)
+buttons.pack(fill="x", padx=24, pady=(0, 14))
+tk.Button(
+    buttons, text="▶  Start Receiver", command=start_server,
+    bg=CYAN, fg="#071017", activebackground="#76E6FF",
+    activeforeground="#071017", relief="flat",
+    font=("Segoe UI", 10, "bold"), padx=18, pady=10, cursor="hand2",
+).pack(side="left", padx=(0, 10))
+tk.Button(
+    buttons, text="■  Stop Receiver", command=stop_server,
+    bg="#3A2029", fg="#FFB7C3", activebackground="#57303B",
+    activeforeground=TEXT, relief="flat",
+    font=("Segoe UI", 10, "bold"), padx=18, pady=10, cursor="hand2",
+).pack(side="left")
+
+# Log
+tk.Label(
+    root, text="RECEIVER LOG",
+    font=("Segoe UI", 9, "bold"), fg=MUTED, bg=BG,
+).pack(anchor="w", padx=26, pady=(4, 6))
+log_frame = tk.Frame(root, bg=PANEL)
+log_frame.pack(fill="both", expand=True, padx=24, pady=(0, 22))
+scrollbar = tk.Scrollbar(log_frame)
+scrollbar.pack(side="right", fill="y")
+log_text = tk.Text(
+    log_frame, bg=PANEL, fg="#C9D7E5", insertbackground=TEXT,
+    font=("Consolas", 9), relief="flat", wrap="word",
+    yscrollcommand=scrollbar.set, padx=10, pady=10, state="disabled",
+)
+log_text.pack(side="left", fill="both", expand=True)
+scrollbar.config(command=log_text.yview)
+
+# Startup logs
+add_log("Online Mouse PC GUI ready.")
+add_log("Receiver will start automatically.")
+add_log("Phone and PC should be connected to the same Wi-Fi network.")
+add_log(f"PC IP: {get_local_ip()}  ← Phone mein yahi daalo")
+
+root.after(150, refresh_ui)
+root.after(800, start_server)
+root.mainloop()
